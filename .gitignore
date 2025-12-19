@@ -214,3 +214,30 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# ==============================================================================
+# Rellis-3D Dataset (large image files)
+# ==============================================================================
+Rellis-3D/
+Rellis_3D_cam_intrinsic/
+*.zip
+*.json
+*.pt 
+*.bin 
+*.safetensors
+*.pth 
+
+# ==============================================================================
+# Fine-tuning / Preference Dataset Outputs
+# ==============================================================================
+src/alpamayo_r1/alignment/finetune_dataset/
+src/alpamayo_r1/alignment/preference_dataset/
+src/alpamayo_r1/alignment/rellis3d_test/
+*.jpg
+# Generated images and data
+*.jsonl
+*.parquet
+
+# Sample images saved during processing
+sample_*.jpg
+trajectory_*.png

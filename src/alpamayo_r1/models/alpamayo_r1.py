@@ -196,7 +196,28 @@ class AlpamayoR1(ReasoningVLA):
             logits_processor=logits_processor,
             **tokenized_data,
         )
-        vlm_outputs.rope_deltas = self.vlm.model.rope_deltas
+        # Handle PeftModel wrapper which might hide attributes
+        if hasattr(self.vlm, "base_model") and hasattr(self.vlm.base_model, "model") and hasattr(self.vlm.base_model.model, "rope_deltas"):
+             vlm_outputs.rope_deltas = self.vlm.base_model.model.rope_deltas
+        elif hasattr(self.vlm, "model") and hasattr(self.vlm.model, "rope_deltas"):
+             vlm_outputs.rope_deltas = self.vlm.model.rope_deltas
+        else:
+             # Fallback: maybe it's directly on self.vlm.model.model (transformers structure)
+             # Qwen2VL/3VL structure: model -> model -> layers
+             # Try to find it recursively or default to None (which will crash later)
+             # Let's hope one of the above works.
+             # If using PEFT, it might be self.vlm.base_model.model...
+             # Let's try flexible access
+             def get_attr_recursive(obj, attr_name):
+                 if hasattr(obj, attr_name): return getattr(obj, attr_name)
+                 if hasattr(obj, "model"): return get_attr_recursive(obj.model, attr_name)
+                 if hasattr(obj, "base_model"): return get_attr_recursive(obj.base_model, attr_name)
+                 return None
+             
+             delta = get_attr_recursive(self.vlm, "rope_deltas")
+             if delta is None:
+                 raise AttributeError("Could not find 'rope_deltas' in VLM model hierarchy.")
+             vlm_outputs.rope_deltas = delta
 
         # manually replace padding after EOS token
         vlm_outputs.sequences = replace_padding_after_eos(
