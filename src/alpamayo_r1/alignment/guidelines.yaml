@@ -1,326 +1,266 @@
-# Off-Road Driving Safety Guidelines for Alpamayo-R1 Fine-tuning
-# Based on 10 Critical Risk Scenarios Specific to Off-Road / Unpaved Terrain
-# Each rule helps GPT evaluate and correct model outputs for safer off-road driving behavior
+# Off-Road Trajectory Consistency Guidelines for Alpamayo-R1 Fine-tuning
+# Purpose: FIRST identify drivable paths, THEN avoid hazards within those paths
+# Key objective: Follow established tracks/trails, stay on drivable terrain, avoid obstacles
 
 rules:
   # ============================================================================
-  # 1. UNSTABLE TERRAIN & SUDDEN LOSS OF TRACTION
+  # 0. DRIVABLE PATH IDENTIFICATION (HIGHEST PRIORITY)
   # ============================================================================
-  - id: traction_loss_anticipation
-    category: terrain_safety
-    description: "Anticipate sudden loss of traction on loose, muddy, or sandy surfaces."
+  - id: drivable_path_identification
+    category: path_identification
+    description: "FIRST identify where the vehicle CAN drive, then choose the safest route among those options."
     priority: critical
     enabled: true
     details: |
-      Off-road terrain often includes loose gravel, sand, mud, or wet soil with unpredictable traction.
+      **STEP 1: IDENTIFY DRIVABLE TERRAIN**
+      Before evaluating hazards, identify what IS drivable:
+      - Tire tracks / wheel ruts (darker, compressed soil showing prior vehicle passage)
+      - Worn grass paths (grass is shorter, flattened, or absent from repeated use)
+      - Cleared trails (visible path boundaries, less dense vegetation)
+      - Compacted dirt/gravel surfaces
+      - Roads or trail surfaces (visually distinct from surrounding terrain)
       
-      EVALUATE FOR:
-      - Loose gravel, sand, mud, or uneven soil visible ahead
-      - Wheel slip indicators or prior instability
-      - Changes in terrain texture or color
+      **STEP 2: IDENTIFY NON-DRIVABLE AREAS**
+      These are ABSOLUTE no-go zones:
+      - Trees, bushes, dense vegetation (green foliage blocking path)
+      - Large rocks, boulders, obstacles
+      - Steep embankments, cliffs, drops
+      - Deep water/rivers (not puddles, but significant water bodies)
+      - Fences, barriers, structures
+      
+      **STEP 3: CHOOSE BEST PATH**
+      Among drivable options, prefer:
+      1. Established tire tracks (most commonly used = safest)
+      2. Clearer/wider paths
+      3. Firmer ground (less mud/sand)
       
       CORRECT IF model:
-      - Applies aggressive acceleration or braking on loose surfaces
-      - Maintains on-road friction assumptions
-      - Plans sharp turns on unstable terrain
+      - Plans trajectory INTO trees, dense vegetation, or obstacles
+      - Ignores visible tire tracks and goes off-trail
+      - Heads toward non-drivable terrain
       
       SHOULD DO:
-      - Reduce acceleration, braking, and steering aggressiveness
-      - Favor smooth, low-curvature trajectories
-      - Maintain steady throttle to preserve traction
+      - Follow existing tire tracks when visible
+      - Stay on established paths/trails
+      - Recognize and follow the "main route" based on visual wear patterns
 
   # ============================================================================
-  # 2. STEEP SLOPES & ROLLOVER RISK
+  # 1. DRIVABLE CORRIDOR SELECTION (WIDEST + FIRMEST)
   # ============================================================================
-  - id: rollover_risk_management
-    category: vehicle_stability
-    description: "Manage rollover risk on steep inclines, declines, and side slopes."
+  - id: drivable_corridor_selection
+    category: corridor_planning
+    description: "Choose the widest, firmest, continuous drivable corridor and commit to it."
     priority: critical
     enabled: true
     details: |
-      Off-road environments often include steep slopes that increase rollover risk.
-      
+      Off-road often provides multiple imperfect tracks. The correct behavior is to choose
+      the best corridor (firm + wide + continuous) and avoid frequent switching.
+
       EVALUATE FOR:
-      - Steep uphill or downhill gradients
-      - Side slopes with vehicle tilt
-      - Narrow ridge paths or embankments
-      
+      - A visible open corridor (often grassy/less muddy) adjacent to puddles/ruts
+      - Track continuity ahead (does it remain usable for several meters?)
+      - Width margins from puddles, ruts, and vegetation
+
       CORRECT IF model:
-      - Maintains high speed on slopes
-      - Plans lateral maneuvers on side slopes
-      - Ignores vehicle roll stability limits
-      
+      - Centers between ruts even when the center is muddy/wet
+      - Switches left/right corridor without a strong new hazard
+      - Chooses a narrower corridor when a wider firm corridor exists
+
       SHOULD DO:
-      - Reduce speed significantly on slopes
-      - Avoid lateral steering on side inclines
-      - Prefer straight, controlled ascent or descent paths
+      - Prefer firm ground (lighter, textured, less reflective) over dark reflective mud/water
+      - Prefer a corridor that stays usable over the lookahead horizon (not just locally)
+      - Keep a safety margin from puddle edges (avoid sliding into it)
 
   # ============================================================================
-  # 3. NARROW TRAILS & LIMITED MANEUVERING SPACE
+  # 2. PUDDLE & WATER AVOIDANCE (WHEEL-TRACK SAFETY)
   # ============================================================================
-  - id: narrow_trail_caution
-    category: path_planning
-    description: "Drive conservatively on narrow trails with limited escape space."
+  - id: puddle_avoidance
+    category: wheel_safety
+    description: "Do not route wheels through puddles or reflective water unless no alternative exists."
+    priority: critical
+    enabled: true
+    details: |
+      Water depth is uncertain; puddles may hide holes, rocks, or deep mud. The safest default is avoidance.
+
+      EVALUATE FOR:
+      - Reflective surfaces, standing water, pooled areas, wet sheen
+      - Puddle edges where traction changes abruptly
+      - Alternate dry/firm shoulder or higher ground
+
+      CORRECT IF model:
+      - Keeps trajectory through puddle center
+      - Places the trajectory too close to puddle edge (high slip-in risk)
+      - Assumes puddles are shallow without evidence
+
+      SHOULD DO:
+      - Offset trajectory to keep both wheel tracks on dry/firm ground
+      - Maintain extra lateral margin near puddle edges
+      - If unavoidable, slow to crawl and keep steering minimal (straight, stable crossing)
+
+  # ============================================================================
+  # 3. RUT MANAGEMENT (AVOID DEEPEST GROOVES)
+  # ============================================================================
+  - id: rut_management
+    category: wheel_safety
+    description: "Avoid the deepest ruts; prefer shallow tracks or higher ground to reduce getting stuck and loss of control."
     priority: high
     enabled: true
     details: |
-      Off-road trails are often narrow with little room for avoidance.
-      
+      Deep ruts can trap wheels and force unwanted steering. Prefer shallow ruts or the firm shoulder.
+
       EVALUATE FOR:
-      - Narrow dirt tracks or single-lane trails
-      - Drop-offs, cliffs, or dense vegetation nearby
-      - Limited visibility ahead
-      
+      - Parallel grooves (ruts) with darker mud inside
+      - Raised center ridge or firmer side berms
+      - Unevenness suggesting deep grooves
+
       CORRECT IF model:
-      - Plans aggressive passing or avoidance
-      - Maintains high speed on narrow trails
-      - Does not consider lack of escape routes
-      
+      - Drives into the darkest rut channel
+      - Follows rut centerline when a higher/shallower path exists
+      - Makes sharp lateral moves across ruts at speed
+
       SHOULD DO:
-      - Maintain low speed and centered positioning
-      - Preserve maximum stopping distance
-      - Plan trajectories assuming no lateral escape
+      - Prefer a line that keeps wheels on higher, firmer ground (often beside ruts)
+      - Cross ruts only when necessary, at low speed, with near-perpendicular approach
+      - Keep curvature low to avoid wheel trapping
 
   # ============================================================================
-  # 4. OBSTACLES (ROCKS, LOGS, DEBRIS)
+  # 4. CONSISTENCY & HYSTERESIS (NO OSCILLATION)
   # ============================================================================
-  - id: obstacle_negotiation
-    category: obstacle_handling
-    description: "Carefully negotiate rocks, logs, and debris instead of abrupt avoidance."
+  - id: corridor_commitment_hysteresis
+    category: consistency
+    description: "Once a safe corridor is chosen, keep it unless a clear new hazard forces a change."
     priority: critical
     enabled: true
     details: |
-      Off-road paths often contain natural obstacles requiring careful traversal.
-      
+      Off-road requires stable decisions. Frequent left-right changes are unsafe and reduce model reliability.
+
       EVALUATE FOR:
-      - Rocks, logs, tree roots, or debris on path
-      - Uneven obstacle heights
-      - Narrow clearance zones
-      
+      - Repeated frames of similar terrain (same puddle/rut layout)
+      - Small lateral biases that flip direction without new evidence
+
       CORRECT IF model:
-      - Attempts sudden swerves at close range
-      - Treats obstacles as on-road hazards
-      - Maintains speed unsuitable for obstacle traversal
-      
+      - Alternates between left and right corridor across similar samples
+      - Overreacts to minor texture changes with major lateral corrections
+      - Fails to preserve the previously safe corridor
+
       SHOULD DO:
-      - Slow down early before obstacles
-      - Plan precise wheel placement
-      - Prefer controlled crawl over abrupt avoidance
+      - Use a "commitment bias": stay in the selected corridor if it remains safe
+      - Only switch corridors when current corridor becomes clearly worse (blocked, deep mud, narrowing)
+      - Prefer smooth micro-adjustments over large lateral jumps
 
   # ============================================================================
-  # 5. BLIND CRESTS & LIMITED VISIBILITY
+  # 5. NEAR-FIELD TERRAIN PRIORITY (IMMEDIATE TRAJECTORY CORRECTION)
   # ============================================================================
-  - id: blind_crest_handling
-    category: visibility_safety
-    description: "Approach blind crests and hills with maximum caution."
+  - id: near_field_terrain_priority
+    category: near_field
+    description: "Prioritize immediate roughness/obstacles over distant or hypothetical risks; adjust speed/curvature/wheel placement accordingly."
+    priority: critical
+    enabled: true
+    details: |
+      Off-road failures are driven by immediate terrain: bumps, rocks, holes, mud patches, puddle edges.
+
+      EVALUATE FOR:
+      - Visible bumps/rocks/holes/ruts within short distance
+      - Uneven terrain that requires immediate wheel placement changes
+
+      CORRECT IF model:
+      - Produces a smooth-looking path that ignores visible roughness
+      - Keeps speed/curvature similar to on-road behavior
+      - Avoids "necessary" small detours around immediate hazards
+
+      SHOULD DO:
+      - Reduce speed first, then adjust path
+      - Allow small detours and micro-corrections to protect wheels and undercarriage
+      - Keep the path controllable and recoverable
+
+  # ============================================================================
+  # 6. SMOOTH CONTROL ON LOW FRICTION (LIMIT CURVATURE/JERK)
+  # ============================================================================
+  - id: low_friction_smoothness
+    category: control_limits
+    description: "On muddy/wet ground, avoid sharp steering and abrupt braking; keep curvature and jerk low."
     priority: high
     enabled: true
     details: |
-      Off-road hills and terrain frequently block forward visibility.
-      
+      Wet mud and mixed surfaces amplify slip. Stability beats aggressiveness.
+
       EVALUATE FOR:
-      - Hill crests or terrain rises blocking view
-      - Vegetation or terrain occlusion
-      - Unknown terrain beyond crest
-      
+      - Wet or muddy surfaces
+      - Surface transitions (dry -> wet, grass -> mud)
+      - Narrow corridor near puddles/ruts
+
       CORRECT IF model:
-      - Maintains speed approaching blind crests
-      - Assumes clear terrain beyond visibility
-      - Plans aggressive maneuvers without confirmation
-      
+      - Plans sharp turns near puddle edges
+      - Uses aggressive braking/acceleration on muddy ground
+      - Makes sudden lateral changes
+
       SHOULD DO:
-      - Reduce speed before crest
-      - Apply creep-forward behavior
-      - Assume obstacles or drop-offs may exist beyond view
+      - Prefer gentle curvature and early mild deceleration
+      - Maintain steady throttle on low traction
+      - Keep a larger stopping margin
 
   # ============================================================================
-  # 6. WATER CROSSINGS & FLOODED SECTIONS
+  # 7. SAFE CLEARANCE (EDGE / VEGETATION / DROP-OFF)
   # ============================================================================
-  - id: water_crossing_assessment
-    category: environmental_hazards
-    description: "Assess water crossings carefully before entering."
-    priority: critical
+  - id: safe_clearance_margins
+    category: clearance
+    description: "Maintain clearance from trail edges, vegetation, and soft shoulders while avoiding puddles/ruts."
+    priority: medium
     enabled: true
     details: |
-      Off-road routes may include streams, puddles, or flooded terrain.
-      
+      Avoid trading puddle avoidance for edge hazards (soft shoulder, hidden holes, vegetation snag).
+
       EVALUATE FOR:
-      - Standing water or flowing streams
-      - Unclear depth or submerged obstacles
-      - Muddy entry and exit points
-      
+      - Trail boundary softness, grass shoulder uncertainty
+      - Bushes/branches close to path
+      - Narrowing corridors
+
       CORRECT IF model:
-      - Enters water at speed
-      - Assumes shallow depth without evidence
-      - Ignores potential for loss of traction
-      
+      - Hugs edges excessively with no margin
+      - Cuts into uncertain shoulder that may collapse or hide holes
+
       SHOULD DO:
-      - Slow to crawl speed before water
-      - Maintain steady throttle through crossing
-      - Avoid sudden acceleration or braking in water
+      - Keep a practical margin from edges while remaining wheel-safe
+      - Prefer the most predictable surface even if slightly longer
 
   # ============================================================================
-  # 7. SURFACE TRANSITIONS (HARD → SOFT)
+  # 8. IF FORCED TO CROSS WATER/MUD (FAIL-SAFE CROSSING)
   # ============================================================================
-  - id: surface_transition_awareness
-    category: terrain_change
-    description: "Handle abrupt transitions between hard and soft surfaces smoothly."
+  - id: unavoidable_crossing_failsafe
+    category: failsafe
+    description: "If water/mud is unavoidable, cross slowly, straight, and with minimal steering/braking."
     priority: high
     enabled: true
     details: |
-      Off-road driving often involves rapid surface changes.
-      
-      EVALUATE FOR:
-      - Transition from rock to sand, dirt to mud, or dry to wet soil
-      - Visible change in surface texture
-      
-      CORRECT IF model:
-      - Maintains same control limits across surfaces
-      - Applies sudden steering or braking at transition
-      
-      SHOULD DO:
-      - Gradually adapt speed and control limits
-      - Reduce steering input during transitions
-      - Stabilize vehicle before further maneuvers
+      Sometimes no dry corridor exists. In that case, the goal is to minimize slip and avoid stopping mid-section.
 
-  # ============================================================================
-  # 8. DESCENT CONTROL & ENGINE BRAKING
-  # ============================================================================
-  - id: downhill_control
-    category: longitudinal_safety
-    description: "Use controlled descent strategies on steep downhills."
-    priority: critical
-    enabled: true
-    details: |
-      Steep off-road descents pose high runaway and slip risk.
-      
       EVALUATE FOR:
-      - Steep downhill grades
-      - Loose or slippery downhill surfaces
-      
-      CORRECT IF model:
-      - Relies on heavy braking downhill
-      - Allows speed to increase uncontrollably
-      
-      SHOULD DO:
-      - Use engine braking principles
-      - Maintain low, controlled speed
-      - Avoid sudden braking that could cause sliding
+      - No visible alternative around puddle/mud
+      - Narrow trail fully blocked by water
 
-  # ============================================================================
-  # 9. VEGETATION & UNSEEN GROUND HAZARDS
-  # ============================================================================
-  - id: hidden_ground_hazards
-    category: uncertainty_handling
-    description: "Account for hidden hazards beneath vegetation or soft ground."
-    priority: high
-    enabled: true
-    details: |
-      Vegetation can hide holes, rocks, or uneven ground.
-      
-      EVALUATE FOR:
-      - Tall grass, bushes, or leaves covering ground
-      - Soft or disturbed soil
-      
       CORRECT IF model:
-      - Treats vegetated ground as flat and safe
-      - Maintains speed through obscured terrain
-      
-      SHOULD DO:
-      - Increase uncertainty margin for hidden obstacles
-      - Reduce speed in vegetated areas
-      - Prefer well-defined tracks when available
+      - Enters water/mud at speed
+      - Turns sharply while in water/mud
+      - Brakes hard inside the puddle/mud
 
-  # ============================================================================
-  # 10. REMOTE AREA FAIL-SAFE BEHAVIOR
-  # ============================================================================
-  - id: remote_area_conservatism
-    category: mission_safety
-    description: "Adopt conservative behavior in remote areas with no recovery options."
-    priority: critical
-    enabled: true
-    details: |
-      Off-road driving often occurs far from assistance or recovery.
-      
-      EVALUATE FOR:
-      - Remote or isolated terrain
-      - Lack of visible exit routes or support
-      
-      CORRECT IF model:
-      - Takes high-risk maneuvers unnecessarily
-      - Optimizes only for speed or progress
-      
       SHOULD DO:
-      - Prefer conservative, low-risk trajectories
-      - Avoid maneuvers that could immobilize vehicle
-      - Prioritize vehicle survivability over speed
-
-# ============================================================================
-# ADDITIONAL OFF-ROAD TRAJECTORY PRIORITIZATION GUIDELINES
-# ============================================================================
-# These guidelines clarify how Alpamayo should prioritize trajectory correction
-# in off-road environments with high terrain uncertainty and immediate hazards.
-#
-# KEY PRINCIPLE:
-# Off-road driving failures are more often caused by immediate terrain hazards
-# (rough ground, obstacles, uneven surfaces) than rare long-tail events.
-# Therefore, prioritize near-field trajectory correction over distant or hypothetical risks.
-#
-# GUIDELINES:
-#
-# 1. NEAR-FIELD HAZARD PRIORITY
-#    - Give higher importance to hazards within short planning horizon
-#      (immediate ground conditions, visible obstacles, uneven terrain).
-#    - Prefer correcting trajectory shape (speed, curvature, wheel placement)
-#      over speculative long-term risk avoidance.
-#
-# 2. TERRAIN-FIRST TRAJECTORY ADJUSTMENT
-#    - When terrain roughness, obstacles, or surface instability is visible,
-#      trajectory modification MUST focus on:
-#        • speed reduction
-#        • smoother curvature
-#        • precise path placement
-#    - Long-tail events (rollover, deep water, total immobilization) should
-#      NOT override clear immediate terrain-driven corrections.
-#
-# 3. ROUGHNESS & UNEVENNESS SENSITIVITY
-#    - If terrain appears bumpy, rocky, rutted, or uneven:
-#        • favor slower, more compliant trajectories
-#        • avoid aggressive avoidance maneuvers
-#        • allow frequent micro-adjustments to trajectory
-#
-# 4. LOCAL AVOIDANCE OVER GLOBAL OPTIMALITY
-#    - In off-road settings, locally safe maneuvers (small detours, minor slowdowns)
-#      are preferred over globally optimal but risky trajectories.
-#    - Trajectory quality is defined by stability and controllability,
-#      not shortest path or fastest progress.
-#
-# 5. FAIL-SAFE TRAJECTORY BIAS
-#    - When uncertainty is high, bias trajectory toward actions that are easy to recover from:
-#        • low speed
-#        • straight or gently curved motion
-#        • high margin for stopping
-#
-# EVALUATION NOTE:
-# A trajectory that is conservative and heavily adjusted for immediate terrain
-# is NOT a violation, even if it reduces progress or efficiency.
-#
-# A trajectory that ignores visible roughness, obstacles, or uneven ground
-# in favor of abstract long-tail risk modeling SHOULD be marked as VIOLATED.
+      - Slow BEFORE entry, then maintain steady low speed
+      - Keep steering near-straight through the section
+      - Exit to firmer ground before attempting any major maneuver
 
 # ============================================================================
 # GLOBAL EVALUATION GUIDELINES
 # ============================================================================
 # When evaluating Alpamayo outputs:
 #
-# 1. IDENTIFY which off-road risk scenarios are present
-# 2. PRIORITIZE near-field terrain hazards over long-tail hypothetical risks
-# 3. CHECK if trajectory is visibly adjusted for roughness, obstacles, and uneven ground
-# 4. VERIFY trajectory prioritizes stability, controllability, and recoverability
+# 1. IDENTIFY immediate near-field terrain hazards (puddles, deep mud, ruts, roughness)
+# 2. CHECK if the model selects a firm, wide, continuous corridor (drivable corridor)
+# 3. VERIFY wheel-safe placement: avoid puddles/deep ruts; keep margin from puddle edges
+# 4. ENFORCE consistency: once a corridor is safe, avoid left-right oscillation
 # 5. MARK as VIOLATED only if a specific rule above is clearly broken
-# 6. If NO relevant off-road risk is visible, mark as OK and keep original
+# 6. If terrain is ambiguous, prefer conservative, recoverable trajectories (slow + smooth)
 #
 # REMEMBER:
-# - Slow, conservative off-road driving is NOT a violation.
-# - Trajectory adjustment for immediate terrain is ALWAYS preferred.
-# - Aggressive maneuvers are violations unless explicitly justified.
+# - "Centered" is not the goal; "wheel-safe and consistent" is the goal.
+# - Small micro-adjustments are good; frequent corridor switching is bad.
+# - Avoid puddles by default; only cross when clearly unavoidable.

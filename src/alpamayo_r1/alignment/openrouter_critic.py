@@ -164,42 +164,43 @@ class OpenRouterCritic:
                     t = (n - 5 + j) * 0.1
                     waypoints_str += f"  t+{t:.1f}s: ({pt[0]:.2f}, {pt[1]:.2f})\n"
         
-        return f"""You are an expert OFF-ROAD driving evaluator. 
+        return f"""# ROLE
+You are an expert OFF-ROAD TRAJECTORY CORRECTION SPECIALIST. Your job is to evaluate autonomous vehicle trajectories against safety guidelines and specify corrections when violations occur.
 
-## CORE RULE: ALWAYS steer to the CENTER of the WIDEST, MOST OPEN path!
-- Find the widest open space in the image
-- Trajectory must go through the CENTER of that open space
-- Stay AWAY from edges, vegetation, trees, and obstacles
+# SAFETY GUIDELINES (MUST FOLLOW)
+{guidelines}
 
-## ANALYZE THE IMAGE:
-1. Where is the WIDEST, MOST OPEN area?
-2. Is the trajectory going through the CENTER of that open space?
-3. Or is it too close to vegetation/edges?
+# YOUR TASK
+1. ANALYZE the image to identify: puddles, mud, ruts, firm ground, vegetation, drivable corridors
+2. TRACE the planned trajectory across the image - where does it LEAD?
+3. CHECK each guideline - does the trajectory violate any rule?
+4. If VIOLATED, specify the CORRECTION needed (direction and amount)
 
-## ALPAMAYO OUTPUT:
-Reasoning: \"{reasoning}\"
+# CURRENT ALPAMAYO MODEL OUTPUT
+**Reasoning:** "{reasoning}"
+**Planned Trajectory:**
 {traj_text}
 {waypoints_str}
 
-## DECISION:
-- **VIOLATED** if trajectory is NOT centered in the open path
-- **VIOLATED** if trajectory goes towards any vegetation or edge
-- **OK** only if trajectory goes through the CENTER of the widest open area
+# DIRECTION RULE
+- LEFT in image = steer LEFT (+y)
+- RIGHT in image = steer RIGHT (-y)
+- Steer toward OPEN/CLEAR areas, away from trees/vegetation
 
-## RESPONSE (JSON only):
+# RESPOND IN JSON ONLY
 {{
-    "scene_description": "Open area is [where]. Vegetation is [where]. Current trajectory goes [where].",
     "violated": true or false,
-    "explanation": "Trajectory [is/is not] centered. Should steer [direction] to center of open path.",
-    "corrected_reasoning": "If violated: new reasoning. If OK: null",
-    "trajectory_correction": {{
-        "action": "left/right/straight/maintain",
-        "lateral_offset_meters": 2.0,
-        "description": "Steer to CENTER of open area"
-    }}
+    "action": "left" or "right" or "straight",
+    "offset_meters": 2.0,
+    "reason": "short explanation"
 }}
 
-Be STRICT! The vehicle must stay in the CENTER of open paths."""
+# RULES
+- If trajectory goes toward trees/obstacles → steer AWAY
+- If trajectory is fine → violated=false
+- offset_meters: typically 1.0 to 3.0
+- Output ONLY JSON, no other text
+"""
     
     def critique(
         self,
@@ -255,51 +256,60 @@ Be STRICT! The vehicle must stay in the CENTER of open paths."""
                     "content": content
                 }],
                 temperature=self.temperature,
-                max_tokens=1024,
+                max_tokens=4096,
+                extra_body={"reasoning": {"enabled": True}}  # Enable Gemini deep reasoning
             )
             
             raw_response = response.choices[0].message.content
             
             # Parse JSON response
+            # Remove markdown code block markers if present
+            cleaned_response = raw_response
+            if "```json" in cleaned_response:
+                cleaned_response = cleaned_response.replace("```json", "").replace("```", "")
+            elif "```" in cleaned_response:
+                cleaned_response = cleaned_response.replace("```", "")
+            cleaned_response = cleaned_response.strip()
+            
             # Try to extract JSON from response
-            json_match = re.search(r'\{.*\}', raw_response, re.DOTALL)
+            json_match = re.search(r'\{.*\}', cleaned_response, re.DOTALL)
             if json_match:
                 result = json.loads(json_match.group())
             else:
-                result = json.loads(raw_response)
+                result = json.loads(cleaned_response)
             
-            # Build corrected trajectory if violated
+            # Build corrected trajectory from simple action/offset
             corrected_traj = None
-            if result.get("violated") and result.get("trajectory_correction"):
-                correction = result["trajectory_correction"]
-                action = correction.get("action", "maintain")
-                offset = correction.get("lateral_offset_meters", 0)
+            if result.get("violated") and result.get("action"):
+                action = result.get("action", "straight")
+                offset = float(result.get("offset_meters", 2.0))
                 
-                if trajectory is not None:
+                if trajectory is not None and action != "straight":
                     corrected_traj = trajectory.copy()
                     n_points = len(corrected_traj)
                     
-                    # Create gradual offset: starts at 0, increases to full offset
-                    # This keeps start point same but curves to new direction
-                    t = np.linspace(0, 1, n_points)  # 0 to 1
-                    gradual_factor = t ** 1.5  # Slightly curved ramp
-                    
-                    if action == "straight":
-                        # Gradually reduce lateral component to 0
-                        corrected_traj[:, 1] = corrected_traj[:, 1] * (1 - gradual_factor)
-                    elif action == "left":
-                        # Gradually add positive offset (left = +y)
-                        offset = abs(offset) if offset != 0 else 2.0  # Default 2.0m
-                        corrected_traj[:, 1] = corrected_traj[:, 1] + gradual_factor * offset
+                    # Determine offset direction
+                    if action == "left":
+                        target_offset = abs(offset)  # +y = left
                     elif action == "right":
-                        # Gradually add negative offset (right = -y)
-                        offset = abs(offset) if offset != 0 else 2.0  # Default 2.0m  
-                        corrected_traj[:, 1] = corrected_traj[:, 1] - gradual_factor * offset
+                        target_offset = -abs(offset)  # -y = right
+                    else:
+                        target_offset = 0.0
+                    
+                    # Simple approach:
+                    # - Points 0-1: keep identical (start alignment)
+                    # - Points 2+: smoothly add offset
+                    start_fixed = 2
+                    for i in range(start_fixed, n_points):
+                        # Smooth ramp: 0 at start_fixed, 1 at end
+                        t = (i - start_fixed) / (n_points - start_fixed - 1)
+                        ease = t * t * (3 - 2 * t)  # smoothstep
+                        corrected_traj[i, 1] = trajectory[i, 1] + ease * target_offset
             
             return CritiqueResult(
                 violated=result.get("violated", False),
-                explanation=result.get("explanation", ""),
-                corrected_reasoning=result.get("corrected_reasoning"),
+                explanation=result.get("reason", ""),  # Use 'reason' from simplified format
+                corrected_reasoning=None,  # Not used in simplified format
                 corrected_trajectory=corrected_traj,
                 original_reasoning=reasoning,
                 original_trajectory=trajectory,

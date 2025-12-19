@@ -27,19 +27,17 @@ print("FINE-TUNING DATASET GENERATION (Rellis-3D)")
 print("="*60)
 
 # Configuration
-SAMPLES_PER_FOLDER = 1000  # More samples for better coverage
+SAMPLES_PER_FOLDER = 500
 NUM_FRAMES = 4  # Sequential frames for Alpamayo
 RELLIS3D_ROOT = Path("/home/byounggun/alpamayo/Rellis-3D")
+# OUTPUT_DIR = Path("/home/byounggun/alpamayo/src/alpamayo_r1/alignment/preference_dataset")
 OUTPUT_DIR = Path("/home/byounggun/alpamayo/src/alpamayo_r1/alignment/finetune_dataset")
 OUTPUT_DIR.mkdir(exist_ok=True)
 
-# Use only 00000 folder for now
-rellis_folders = [RELLIS3D_ROOT / "00000"]
-print(f"Using folder: {rellis_folders[0]}")
+# Process ALL folders
+rellis_folders = sorted([f for f in RELLIS3D_ROOT.iterdir() if f.is_dir()])
+print(f"Processing {len(rellis_folders)} folders: {[f.name for f in rellis_folders]}")
 
-# Camera intrinsics
-FX, FY = 2813.64, 2808.33
-CX, CY = 969.29, 624.05
 
 # Initialize components
 print("\n[1/4] Initializing components...")
@@ -51,7 +49,7 @@ from alpamayo_r1 import helper
 critic = OpenRouterCritic(model="google/gemini-3-flash-preview")
 guidelines = load_guidelines()
 guidelines_prompt = guidelines.to_prompt()
-print(f"✓ Critic: Gemini 3 Flash")
+# print(f"✓ Critic: Gemini 3 Flash")
 print(f"✓ Guidelines: {len(guidelines)} off-road rules")
 
 print("\n  Loading Alpamayo-R1 model...")
@@ -166,12 +164,20 @@ for folder_idx, folder in enumerate(rellis_folders):
                 guidelines=guidelines_prompt,
             )
             
+            # DEBUG: Save first failed parse response
+            debug_file = OUTPUT_DIR / "debug_raw_response.txt"
+            if "Failed to parse" in critique.explanation and not debug_file.exists():
+                with open(debug_file, "w") as f:
+                    f.write(f"=== Explanation ===\n{critique.explanation}\n\n")
+                    f.write(f"=== Raw Response ===\n{critique.raw_response}\n")
+                print(f"    [DEBUG] Saved raw response to {debug_file}")
+            
             # ==============================================================
             # CREATE FINE-TUNING SAMPLE
             # ==============================================================
-            if critique.violated and critique.corrected_reasoning and critique.corrected_trajectory is not None:
-                # Use CORRECTED data
-                final_reasoning = critique.corrected_reasoning
+            if critique.violated and critique.corrected_trajectory is not None:
+                # Use CORRECTED trajectory, but KEEP Alpamayo's original reasoning style
+                final_reasoning = alpamayo_reasoning  # Keep original concise reasoning!
                 final_trajectory = critique.corrected_trajectory.tolist()
                 source = "corrected"
                 total_violated += 1

@@ -5,25 +5,25 @@ from PIL import Image
 import matplotlib.pyplot as plt
 
 # Configuration
-DATA_PATH = Path("/home/byounggun/alpamayo/src/alpamayo_r1/alignment/finetune_dataset/finetune_data.jsonl")
-OUTPUT_PATH = Path("/home/byounggun/alpamayo/src/alpamayo_r1/alignment/finetune_dataset")
+DATA_PATH = Path("/home/byounggun/alpamayo/src/alpamayo_r1/alignment/preference_dataset/finetune_data.jsonl")
+OUTPUT_PATH = Path("/home/byounggun/alpamayo/src/alpamayo_r1/alignment/preference_dataset")
 OUTPUT_PATH.mkdir(parents=True, exist_ok=True)
-NUM_SAMPLES = 10
+NUM_SAMPLES = 20
 
 # Camera Intrinsics
 FX, FY = 2813.64, 2808.33
 CX, CY = 969.29, 624.05
 
 def project_to_image(trajectory_xy, img_shape):
+    """Project trajectory to image coordinates"""
     H, W = img_shape[:2]
     points = []
-    # trajectory_xy is list of [x, y]
     for pt in trajectory_xy:
         x_fwd, y_lat = pt[0], pt[1]
-        if x_fwd <= 1.0:
+        if x_fwd <= 1.0:  # Same as create_viz.py
             continue
         u = CX - FX * y_lat / x_fwd
-        v = CY + FY * 1.5 / x_fwd # 1.5m camera height
+        v = CY + FY * 1.5 / x_fwd  # 1.5m camera height
         if 0 <= u < W and 0 <= v < H:
             points.append((int(u), int(v)))
     return points
