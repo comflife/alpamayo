@@ -15,6 +15,23 @@ from peft import LoraConfig, get_peft_model, TaskType
 from alpamayo_r1.models.alpamayo_r1 import AlpamayoR1
 from alpamayo_r1 import helper
 
+"""
+cd /home/byounggun/alpamayo/src
+torchrun --nproc_per_node=4 -m alpamayo_r1.alignment.finetune_rellis3d \
+    --data_path /home/byounggun/alpamayo/src/alpamayo_r1/alignment/finetune_dataset/finetune_data.jsonl \
+    --output_dir /home/byounggun/alpamayo/outputs/alpamayo_lora_rellis3d \
+    --per_device_train_batch_size 1 \
+    --gradient_accumulation_steps 2 \
+    --num_train_epochs 3 \
+    --learning_rate 2e-5 \
+    --warmup_ratio 0.03 \
+    --logging_steps 10 \
+    --save_steps 100 \
+    --bf16 True \
+    --lora_r 8 \
+    --lora_alpha 16
+"""
+
 # Fix for RTX 4000 series DDP issues
 os.environ["NCCL_P2P_DISABLE"] = "1"
 os.environ["NCCL_IB_DISABLE"] = "1"
@@ -31,16 +48,17 @@ class DataArguments:
     image_dir: str = field(default=None, metadata={"help": "Root directory for images (Rellis-3D)"})
 
 @dataclass
-class TrainingArguments(transformers.TrainingArguments):
+class LoraTrainingArguments(transformers.TrainingArguments):
+    """Training arguments with LoRA specific parameters."""
     cache_dir: Optional[str] = field(default=None)
     optim: str = field(default="adamw_torch")
     max_length: int = field(
         default=2048,
         metadata={"help": "Maximum sequence length."},
     )
-    lora_r: int = 8
-    lora_alpha: int = 16
-    lora_dropout: float = 0.05
+    lora_r: int = field(default=8, metadata={"help": "LoRA rank"})
+    lora_alpha: int = field(default=16, metadata={"help": "LoRA alpha"})
+    lora_dropout: float = field(default=0.05, metadata={"help": "LoRA dropout"})
     lora_target_modules: List[str] = field(
         default_factory=lambda: ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
     )
@@ -160,19 +178,32 @@ class SupervisedDataset(torch.utils.data.Dataset):
         prompt_len = prompt_inputs["input_ids"].shape[1]
         
         labels = input_ids.clone()
-        labels[:prompt_len] = -100 # Mask prompt
+        labels[:prompt_len] = -100  # Mask prompt tokens
         
-        return dict(
+        # Build output dict with required VLM inputs
+        output = dict(
             input_ids=input_ids,
             attention_mask=attention_mask,
             labels=labels,
-            # We must pass the pixel values / image inputs if the model needs them
-            # processor.apply_chat_template for VLMs usually handles text only?
-            # Wait, Alpamayo helper uses apply_chat_template.
-            # Does it include image tokens? Yes.
-            # Does it return pixel_values?
-            # Let's check inputs keys.
-        ) # IMPORTANT: Need to verify if 'pixel_values' or similar is needed by the model forward
+        )
+        
+        # Include pixel_values and image_grid_thw for VLM forward pass
+        # Note: processor returns (batch=1, ...) so we remove batch dim
+        if "pixel_values" in inputs:
+            pv = inputs["pixel_values"]
+            if pv.dim() > 3:  # (batch, seq, channels) or similar
+                pv = pv.squeeze(0)
+            output["pixel_values"] = pv
+        if "image_grid_thw" in inputs:
+            igt = inputs["image_grid_thw"]
+            # image_grid_thw should be (num_images, 3) after removing batch
+            # Don't over-squeeze - keep at least 2D
+            if igt.dim() == 3:  # (batch, num_images, 3)
+                igt = igt.squeeze(0)  # -> (num_images, 3)
+            elif igt.dim() == 2 and igt.shape[0] == 1:  # (1, 3) single image case
+                pass  # Keep as (1, 3)
+            output["image_grid_thw"] = igt
+        return output
 
 # Data Collator behaves differently for VLM usually
 # we need to stack tensors and handle padding
@@ -222,7 +253,7 @@ class DataCollatorForSupervisedDataset(object):
         return batch
 
 def train():
-    parser = transformers.HfArgumentParser((ModelArguments, DataArguments, TrainingArguments))
+    parser = transformers.HfArgumentParser((ModelArguments, DataArguments, LoraTrainingArguments))
     model_args, data_args, training_args = parser.parse_args_into_dataclasses()
 
     # Load Model
@@ -293,9 +324,11 @@ def train():
                     vals, batch_first=True, padding_value=0
                 )
             elif k == "pixel_values":
-                 batch[k] = torch.stack(vals)
+                # Qwen3-VL: concat all images along dim 0 (not stack!)
+                batch[k] = torch.cat(vals, dim=0)
             elif k == "image_grid_thw":
-                 batch[k] = torch.stack(vals)
+                # Qwen3-VL: concat all image grid info along dim 0
+                batch[k] = torch.cat(vals, dim=0)
             else:
                 # Default stacking
                 try:
