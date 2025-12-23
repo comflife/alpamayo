@@ -23,6 +23,9 @@ import copy
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.utils.data.distributed import DistributedSampler
 import json
 import logging
 from pathlib import Path
@@ -72,10 +75,9 @@ class FullTrainingArguments(transformers.TrainingArguments):
     traj_loss_weight: float = field(default=1.0, metadata={"help": "Weight for trajectory loss"})
     
     # Memory optimization
-    gradient_checkpointing: bool = False  # Disable for device_map=auto
-    
-    # Disable DataParallel when using device_map=auto
-    dataloader_pin_memory: bool = False
+    gradient_checkpointing: bool = True
+
+    dataloader_pin_memory: bool = True
 
 
 class AlpamayoFullModel(nn.Module):
@@ -445,17 +447,33 @@ def collate_fn(instances, tokenizer):
 def train():
     parser = transformers.HfArgumentParser((ModelArguments, DataArguments, FullTrainingArguments))
     model_args, data_args, training_args = parser.parse_args_into_dataclasses()
-    
-    print(f"Loading Alpamayo model from {model_args.model_name_or_path}...")
-    print("Using device_map='auto' to shard model across available GPUs...")
+
+    # Initialize DDP
+    local_rank = int(os.environ.get("LOCAL_RANK", 0))
+    world_size = int(os.environ.get("WORLD_SIZE", 1))
+    rank = int(os.environ.get("RANK", 0))
+
+    if world_size > 1:
+        # torchrun automatically initializes process group, just set device
+        torch.cuda.set_device(local_rank)
+        device = torch.device(f"cuda:{local_rank}")
+        print(f"[Rank {rank}/{world_size}] Using DDP on device {device}")
+    else:
+        device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+        print(f"Running on single device: {device}")
+
+    if rank == 0:
+        print(f"Loading Alpamayo model from {model_args.model_name_or_path}...")
+
     base_model = AlpamayoR1.from_pretrained(
         model_args.model_name_or_path,
         dtype=torch.bfloat16,
-        device_map="auto",  # Automatically shard across GPUs!
     )
+    base_model = base_model.to(device)
     
     # Apply LoRA to VLM for language training
-    print("Applying LoRA to VLM...")
+    if rank == 0:
+        print("Applying LoRA to VLM...")
     vlm_lora_config = LoraConfig(
         r=training_args.lora_r,
         lora_alpha=training_args.lora_alpha,
@@ -465,10 +483,12 @@ def train():
         task_type="CAUSAL_LM",
     )
     base_model.vlm = get_peft_model(base_model.vlm, vlm_lora_config)
-    base_model.vlm.print_trainable_parameters()
-    
+    if rank == 0:
+        base_model.vlm.print_trainable_parameters()
+
     # Apply LoRA to Expert for trajectory conditioning
-    print("Applying LoRA to Expert...")
+    if rank == 0:
+        print("Applying LoRA to Expert...")
     expert_lora_config = LoraConfig(
         r=training_args.lora_r,
         lora_alpha=training_args.lora_alpha,
@@ -478,8 +498,9 @@ def train():
         task_type="FEATURE_EXTRACTION",
     )
     base_model.expert = get_peft_model(base_model.expert, expert_lora_config)
-    base_model.expert.print_trainable_parameters()
-    
+    if rank == 0:
+        base_model.expert.print_trainable_parameters()
+
     # Train projection layers (critical for trajectory)
     for param in base_model.action_in_proj.parameters():
         param.requires_grad = True
@@ -487,18 +508,25 @@ def train():
         param.requires_grad = True
     for param in base_model.diffusion.parameters():
         param.requires_grad = False
-    
+
     # Wrap in our training model
     model = AlpamayoFullModel(base_model, traj_loss_weight=training_args.traj_loss_weight)
-    
+
     # Enable gradient checkpointing
     if training_args.gradient_checkpointing:
         model.vlm.enable_input_require_grads()
-    
+
+    # Wrap with DDP
+    if world_size > 1:
+        model = DDP(model, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=True)
+        if rank == 0:
+            print(f"Model wrapped with DDP across {world_size} GPUs")
+
     # Print trainable params
-    total_params = sum(p.numel() for p in model.parameters())
-    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print(f"Total params: {total_params:,}, Trainable: {trainable_params:,} ({100*trainable_params/total_params:.2f}%)")
+    if rank == 0:
+        total_params = sum(p.numel() for p in model.parameters())
+        trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        print(f"Total params: {total_params:,}, Trainable: {trainable_params:,} ({100*trainable_params/total_params:.2f}%)")
     
     # Create dataset
     processor = helper.get_processor(base_model.tokenizer)
@@ -507,20 +535,38 @@ def train():
         processor=processor,
         max_length=training_args.max_length
     )
-    
-    # Create DataLoader (no Trainer!)
+
+    # Create DataLoader with DistributedSampler for DDP
     from torch.utils.data import DataLoader
-    
+
     def custom_collate(batch):
         return collate_fn(batch, base_model.tokenizer)
-    
-    dataloader = DataLoader(
-        dataset,
-        batch_size=training_args.per_device_train_batch_size,
-        shuffle=True,
-        collate_fn=custom_collate,
-        num_workers=0,  # For debug
-    )
+
+    if world_size > 1:
+        sampler = DistributedSampler(
+            dataset,
+            num_replicas=world_size,
+            rank=rank,
+            shuffle=True,
+            drop_last=True
+        )
+        dataloader = DataLoader(
+            dataset,
+            batch_size=training_args.per_device_train_batch_size,
+            sampler=sampler,
+            collate_fn=custom_collate,
+            num_workers=4,
+            pin_memory=training_args.dataloader_pin_memory,
+        )
+    else:
+        dataloader = DataLoader(
+            dataset,
+            batch_size=training_args.per_device_train_batch_size,
+            shuffle=True,
+            collate_fn=custom_collate,
+            num_workers=4,
+            pin_memory=training_args.dataloader_pin_memory,
+        )
     
     # Optimizer (only trainable params)
     optimizer = torch.optim.AdamW(
@@ -533,16 +579,28 @@ def train():
     accumulation_steps = training_args.gradient_accumulation_steps
     global_step = 0
     total_steps = len(dataloader) * training_args.num_train_epochs // accumulation_steps
-    
-    print(f"Starting training: {total_steps} steps, {training_args.num_train_epochs} epochs")
-    
+
+    if rank == 0:
+        print(f"Starting training: {total_steps} steps, {training_args.num_train_epochs} epochs")
+
     from tqdm import tqdm
-    
+
     for epoch in range(int(training_args.num_train_epochs)):
-        pbar = tqdm(dataloader, desc=f"Epoch {epoch+1}")
+        # Set epoch for DistributedSampler
+        if world_size > 1:
+            sampler.set_epoch(epoch)
+
+        if rank == 0:
+            pbar = tqdm(dataloader, desc=f"Epoch {epoch+1}")
+        else:
+            pbar = dataloader
+
         accumulated_loss = 0.0
-        
+
         for step, batch in enumerate(pbar):
+            # Move batch to device
+            batch = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
+
             # Forward pass
             outputs = model(
                 input_ids=batch["input_ids"],
@@ -552,39 +610,71 @@ def train():
                 ego_history_xyz=batch.get("ego_history_xyz"),
                 ego_history_rot=batch.get("ego_history_rot"),
             )
-            
+
             loss = outputs["loss"] / accumulation_steps
             loss.backward()
             accumulated_loss += loss.item()
-            
+
             if (step + 1) % accumulation_steps == 0:
                 optimizer.step()
                 optimizer.zero_grad()
                 global_step += 1
-                pbar.set_postfix({"loss": accumulated_loss * accumulation_steps})
+
+                if rank == 0:
+                    pbar.set_postfix({"loss": accumulated_loss * accumulation_steps})
                 accumulated_loss = 0.0
-                
-                # Save checkpoint
-                if global_step % training_args.save_steps == 0:
+
+                # Save checkpoint (only on rank 0)
+                if rank == 0 and global_step % training_args.save_steps == 0:
                     save_path = os.path.join(training_args.output_dir, f"checkpoint-{global_step}")
                     os.makedirs(save_path, exist_ok=True)
-                    torch.save({
-                        "expert_lora": model.expert.state_dict(),
-                        "action_in_proj": model.action_in_proj.state_dict(),
-                        "action_out_proj": model.action_out_proj.state_dict(),
-                        "step": global_step,
-                    }, os.path.join(save_path, "expert_diffusion.pt"))
-                    print(f"\nSaved checkpoint at step {global_step}")
+
+                    # Get underlying model (unwrap DDP if needed)
+                    model_to_save = model.module if isinstance(model, DDP) else model
+
+                    # Save VLM LoRA
+                    model_to_save.vlm.save_pretrained(os.path.join(save_path, "vlm_lora"))
+
+                    # Save Expert LoRA + Diffusion decoder (less frequently)
+                    # Only save diffusion decoder every 3x save_steps
+                    if global_step % (training_args.save_steps * 3) == 0:
+                        torch.save({
+                            "expert_lora": model_to_save.expert.state_dict(),
+                            "action_in_proj": model_to_save.action_in_proj.state_dict(),
+                            "action_out_proj": model_to_save.action_out_proj.state_dict(),
+                            "step": global_step,
+                        }, os.path.join(save_path, "expert_diffusion.pt"))
+                        print(f"\nSaved full checkpoint (VLM + Expert + Diffusion) at step {global_step}")
+                    else:
+                        print(f"\nSaved VLM LoRA checkpoint at step {global_step}")
+
+                # Synchronize all processes after checkpoint saving
+                if world_size > 1:
+                    dist.barrier()
     
-    # Save final model
-    os.makedirs(training_args.output_dir, exist_ok=True)
-    torch.save({
-        "expert_lora": model.expert.state_dict(),
-        "action_in_proj": model.action_in_proj.state_dict(),
-        "action_out_proj": model.action_out_proj.state_dict(),
-    }, os.path.join(training_args.output_dir, "expert_diffusion_final.pt"))
-    
-    print("Training complete!")
+    # Save final model (only on rank 0)
+    if rank == 0:
+        final_save_path = os.path.join(training_args.output_dir, "final")
+        os.makedirs(final_save_path, exist_ok=True)
+
+        # Get underlying model (unwrap DDP if needed)
+        model_to_save = model.module if isinstance(model, DDP) else model
+
+        # Save VLM LoRA
+        model_to_save.vlm.save_pretrained(os.path.join(final_save_path, "vlm_lora"))
+
+        # Save Expert + Diffusion decoder
+        torch.save({
+            "expert_lora": model_to_save.expert.state_dict(),
+            "action_in_proj": model_to_save.action_in_proj.state_dict(),
+            "action_out_proj": model_to_save.action_out_proj.state_dict(),
+        }, os.path.join(final_save_path, "expert_diffusion.pt"))
+
+        print("Training complete!")
+
+    # Final synchronization
+    if world_size > 1:
+        dist.barrier()
 
 
 if __name__ == "__main__":

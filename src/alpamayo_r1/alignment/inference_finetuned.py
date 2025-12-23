@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """
 Inference script to compare Original vs Fine-tuned Alpamayo model.
-Original: 4-bit quantized (to fit in memory)
-Fine-tuned: bfloat16 (since checkpoint was saved in bfloat16)
+Both models run in bfloat16 (no quantization needed with sufficient VRAM).
 """
 
 import os
@@ -13,8 +12,7 @@ import torch
 import numpy as np
 from pathlib import Path
 from PIL import Image
-from transformers import BitsAndBytesConfig
-from peft import get_peft_model, LoraConfig, PeftModel
+from peft import PeftModel
 
 sys.path.insert(0, '/home/byounggun/alpamayo/src')
 
@@ -44,74 +42,80 @@ def create_ego_history(device):
     return ego_history_xyz, ego_history_rot
 
 
-def load_original_model_quantized():
-    """Load original model with 4-bit quantization."""
+def load_original_model():
+    """Load original model in bfloat16."""
     print("\n" + "=" * 60)
-    print("Loading ORIGINAL Alpamayo model (4-bit quantized)...")
+    print("Loading ORIGINAL Alpamayo model (bfloat16)...")
     print("=" * 60)
-    
-    bnb_config = BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_compute_dtype=torch.bfloat16,
-        bnb_4bit_use_double_quant=True,
-        bnb_4bit_quant_type="nf4",
-    )
 
     model = AlpamayoR1.from_pretrained(
         "nvidia/Alpamayo-R1-10B",
-        quantization_config=bnb_config,
-        device_map=DEVICE,
+        dtype=torch.bfloat16,
     )
-    
+    model = model.to(DEVICE)
+
     model.eval()
     print("Original model loaded!")
     return model
 
 
-def load_finetuned_model_4bit():
-    """Load fine-tuned model with 4-bit quantization.
-    
-    Since Expert LoRA weights have shape mismatch with 4-bit quantized base,
-    we only load the projection layers (action_in_proj, action_out_proj).
-    """
+def load_finetuned_model():
+    """Load fine-tuned model with VLM LoRA + Expert LoRA + Diffusion decoder weights."""
     print("\n" + "=" * 60)
-    print("Loading FINE-TUNED Alpamayo model (4-bit, projection-only)...")
+    print("Loading FINE-TUNED Alpamayo model (bfloat16 with full weights)...")
     print("=" * 60)
-    
-    bnb_config = BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_compute_dtype=torch.bfloat16,
-        bnb_4bit_use_double_quant=True,
-        bnb_4bit_quant_type="nf4",
-    )
 
+    # Load base model
     model = AlpamayoR1.from_pretrained(
         "nvidia/Alpamayo-R1-10B",
-        quantization_config=bnb_config,
-        device_map=DEVICE,  # Single GPU
+        dtype=torch.bfloat16,
     )
-    
-    # Load fine-tuned weights (projection layers only - no Expert LoRA due to shape mismatch)
-    checkpoint_path = os.path.join(CHECKPOINT_PATH, "expert_diffusion_final.pt")
-    print(f"Loading projection weights from {checkpoint_path}...")
-    
-    checkpoint = torch.load(checkpoint_path, map_location="cpu")
-    
-    # NOTE: Skipping Expert LoRA - 4-bit quantized model has different weight shapes
-    # Only loading projection layers which are NOT quantized
-    
-    if "action_in_proj" in checkpoint:
-        model.action_in_proj.load_state_dict(checkpoint["action_in_proj"], strict=False)
-        model.action_in_proj.to(device=DEVICE, dtype=torch.bfloat16)
-        print("  Loaded action_in_proj")
-    
-    if "action_out_proj" in checkpoint:
-        model.action_out_proj.load_state_dict(checkpoint["action_out_proj"], strict=False)
-        model.action_out_proj.to(device=DEVICE, dtype=torch.bfloat16)
-        print("  Loaded action_out_proj")
+    model = model.to(DEVICE)
+
+    # Load VLM LoRA
+    vlm_lora_path = os.path.join(CHECKPOINT_PATH, "final", "vlm_lora")
+    if os.path.exists(vlm_lora_path):
+        print(f"Loading VLM LoRA from {vlm_lora_path}...")
+        model.vlm = PeftModel.from_pretrained(model.vlm, vlm_lora_path)
+        print("  VLM LoRA loaded!")
+    else:
+        print(f"  Warning: VLM LoRA not found at {vlm_lora_path}, using base VLM")
+
+    # Load Expert LoRA + Diffusion decoder weights
+    checkpoint_path = os.path.join(CHECKPOINT_PATH, "final", "expert_diffusion.pt")
+    if os.path.exists(checkpoint_path):
+        print(f"Loading Expert + Diffusion weights from {checkpoint_path}...")
+        checkpoint = torch.load(checkpoint_path, map_location=DEVICE)
+
+        # Load Expert LoRA (if saved as full state dict, we need to apply LoRA first)
+        if "expert_lora" in checkpoint:
+            # The checkpoint contains full state dict including LoRA weights
+            # We need to first apply LoRA config then load the weights
+            from peft import LoraConfig, get_peft_model
+            expert_lora_config = LoraConfig(
+                r=8,
+                lora_alpha=16,
+                target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
+                lora_dropout=0.05,
+                bias="none",
+                task_type="FEATURE_EXTRACTION",
+            )
+            model.expert = get_peft_model(model.expert, expert_lora_config)
+            model.expert.load_state_dict(checkpoint["expert_lora"], strict=False)
+            print("  Expert LoRA loaded!")
+
+        if "action_in_proj" in checkpoint:
+            model.action_in_proj.load_state_dict(checkpoint["action_in_proj"])
+            print("  action_in_proj loaded!")
+
+        if "action_out_proj" in checkpoint:
+            model.action_out_proj.load_state_dict(checkpoint["action_out_proj"])
+            print("  action_out_proj loaded!")
+    else:
+        print(f"  Warning: checkpoint not found at {checkpoint_path}")
 
     model.eval()
-    print("Fine-tuned model loaded (projection layers only)!")
+    print("Fine-tuned model loaded successfully!")
     return model
 
 
@@ -211,29 +215,31 @@ def main():
     original_pred = None
     finetuned_pred = None
     
-    # ===== ORIGINAL MODEL (4-bit) =====
+    # ===== ORIGINAL MODEL =====
     try:
-        original_model = load_original_model_quantized()
+        original_model = load_original_model()
         processor = helper.get_processor(original_model.tokenizer)
-        
+
         print("\nRunning inference with ORIGINAL model...")
         original_pred = run_inference(original_model, processor, frame_paths)
-        
+
         # Free memory
         del original_model
         torch.cuda.empty_cache()
         print("Original model unloaded, memory freed.")
     except Exception as e:
         print(f"Original model inference failed: {e}")
-    
-    # ===== FINE-TUNED MODEL (bfloat16) =====
+        import traceback
+        traceback.print_exc()
+
+    # ===== FINE-TUNED MODEL =====
     try:
-        finetuned_model = load_finetuned_model_4bit()
+        finetuned_model = load_finetuned_model()
         processor = helper.get_processor(finetuned_model.tokenizer)
-        
+
         print("\nRunning inference with FINE-TUNED model...")
-        finetuned_pred = run_inference(finetuned_model, processor, frame_paths, device="cuda")
-        
+        finetuned_pred = run_inference(finetuned_model, processor, frame_paths, device=DEVICE)
+
         # Free memory
         del finetuned_model
         torch.cuda.empty_cache()
