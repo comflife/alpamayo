@@ -165,8 +165,34 @@ def extract_text_tokens(
     extract_tokens = ["cot", "meta_action", "answer"]
     extracted_text = {}
     for token in extract_tokens:
-        extracted_text[token] = extract_between_special_tokens(decoded_batch, token)
+        if token == "cot":
+            extracted_text[token] = extract_cot_with_fallback(decoded_batch)
+        else:
+            extracted_text[token] = extract_between_special_tokens(decoded_batch, token)
     return extracted_text
+
+
+def extract_cot_with_fallback(decoded_batch: list[str]) -> list[str]:
+    """Extract CoT text even if <|cot_end|> is missing by stopping at traj start."""
+    start_token = to_special_token("cot_start")
+    end_token = to_special_token("cot_end")
+    fallback_end_token = to_special_token("traj_future_start")
+
+    out: list[str] = []
+    apnd = out.append
+    for s in decoded_batch:
+        start_idx = s.rfind(start_token)
+        if start_idx == -1:
+            apnd("")
+            continue
+        start_idx += len(start_token)
+        end_idx = s.find(end_token, start_idx)
+        if end_idx == -1:
+            end_idx = s.find(fallback_end_token, start_idx)
+            if end_idx == -1:
+                end_idx = len(s)
+        apnd(s[start_idx:end_idx].strip())
+    return out
 
 
 class StopAfterEOS(StoppingCriteria):

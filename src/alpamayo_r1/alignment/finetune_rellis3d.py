@@ -17,11 +17,11 @@ from alpamayo_r1 import helper
 
 """
 cd /home/byounggun/alpamayo/src
-torchrun --nproc_per_node=4 -m alpamayo_r1.alignment.finetune_rellis3d \
-    --data_path /home/byounggun/alpamayo/src/alpamayo_r1/alignment/finetune_dataset/finetune_data.jsonl \
-    --output_dir /home/byounggun/alpamayo/outputs/alpamayo_lora_rellis3d \
+torchrun --nproc_per_node=2 -m alpamayo_r1.alignment.finetune_rellis3d \
+    --data_path /home/byounggun/alpamayo/src/alpamayo_r1/alignment/finetune_dataset_v2/testing.jsonl \
+    --output_dir /home/byounggun/alpamayo/outputs/alpamayo_vlm_v2 \
     --per_device_train_batch_size 1 \
-    --gradient_accumulation_steps 2 \
+    --gradient_accumulation_steps 4 \
     --num_train_epochs 3 \
     --learning_rate 2e-5 \
     --warmup_ratio 0.03 \
@@ -176,9 +176,15 @@ class SupervisedDataset(torch.utils.data.Dataset):
             return_tensors="pt",
         )
         prompt_len = prompt_inputs["input_ids"].shape[1]
-        
+
         labels = input_ids.clone()
-        labels[:prompt_len] = -100  # Mask prompt tokens
+        # Mask prompt tokens (with truncation safety check)
+        if prompt_len < len(labels):
+            labels[:prompt_len] = -100
+        else:
+            # Edge case: truncation cut off the answer, only prompt remains
+            logger.warning(f"Sample {i}: Prompt length {prompt_len} >= total length {len(labels)}, skipping training on this sample")
+            labels[:] = -100  # Mask everything
         
         # Build output dict with required VLM inputs
         output = dict(
@@ -188,21 +194,26 @@ class SupervisedDataset(torch.utils.data.Dataset):
         )
         
         # Include pixel_values and image_grid_thw for VLM forward pass
-        # Note: processor returns (batch=1, ...) so we remove batch dim
+        # processor.apply_chat_template returns batch dimension (1, ...)
+        # We squeeze batch dim but keep image dimension
         if "pixel_values" in inputs:
+            # (1, num_patches, hidden_dim) -> (num_patches, hidden_dim)
             pv = inputs["pixel_values"]
-            if pv.dim() > 3:  # (batch, seq, channels) or similar
-                pv = pv.squeeze(0)
-            output["pixel_values"] = pv
+            if pv.dim() == 3 and pv.shape[0] == 1:
+                output["pixel_values"] = pv.squeeze(0)
+            else:
+                output["pixel_values"] = pv
+
         if "image_grid_thw" in inputs:
+            # (1, num_images, 3) -> (num_images, 3)
             igt = inputs["image_grid_thw"]
-            # image_grid_thw should be (num_images, 3) after removing batch
-            # Don't over-squeeze - keep at least 2D
-            if igt.dim() == 3:  # (batch, num_images, 3)
-                igt = igt.squeeze(0)  # -> (num_images, 3)
-            elif igt.dim() == 2 and igt.shape[0] == 1:  # (1, 3) single image case
-                pass  # Keep as (1, 3)
-            output["image_grid_thw"] = igt
+            if igt.dim() == 3 and igt.shape[0] == 1:
+                output["image_grid_thw"] = igt.squeeze(0)
+            elif igt.dim() == 2:
+                # Already correct shape (num_images, 3)
+                output["image_grid_thw"] = igt
+            else:
+                output["image_grid_thw"] = igt
         return output
 
 # Data Collator behaves differently for VLM usually
