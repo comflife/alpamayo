@@ -3,18 +3,8 @@ Full Pipeline Fine-tuning for Alpamayo-R1.
 Trains VLM + Expert + Diffusion with combined language + trajectory loss.
 
 Usage:
-cd /home/byounggun/alpamayo/src
-torchrun --nproc_per_node=4 -m alpamayo_r1.alignment.finetune_full \
-    --data_path /home/byounggun/alpamayo/src/alpamayo_r1/alignment/finetune_dataset/finetune_data.jsonl \
-    --output_dir /home/byounggun/alpamayo/outputs/alpamayo_full_finetuned \
-    --per_device_train_batch_size 1 \
-    --gradient_accumulation_steps 4 \
-    --num_train_epochs 3 \
-    --learning_rate 1e-5 \
-    --warmup_ratio 0.03 \
-    --logging_steps 10 \
-    --save_steps 100 \
-    --bf16 True
+cd /home/byounggun/alpamayo/src && CUDA_VISIBLE_DEVICES=0,1 torchrun --nproc_per_node=2 -m alpamayo_r1.alignment.finetune_full --data_path /home/byounggun/alpamayo/src/alpamayo_r1/alignment/finetune_dataset/finetune_data.jsonl --output_dir /home/byounggun/alpamayo/outputs/alpamayo_sft_v2 --per_device_train_batch_size 1 --gradient_accumulation_steps 4 --num_train_epochs 3 --learning_rate 1e-5 --warmup_ratio 0.03 --logging_steps 10 --save_steps 100 --bf16 True --traj_loss_weight 1.0
+
 """
 
 import os
@@ -135,7 +125,7 @@ class AlpamayoFullModel(nn.Module):
     ):
         """
         Forward pass with COMBINED language + trajectory loss.
-        
+
         Args:
             input_ids: Token ids
             attention_mask: Attention mask
@@ -148,7 +138,8 @@ class AlpamayoFullModel(nn.Module):
         """
         device = input_ids.device
         total_loss = torch.tensor(0.0, device=device, dtype=torch.float32)
-        
+        loss_dict = {}
+
         # =================================================================
         # 1. Language Loss (VLM forward)
         # =================================================================
@@ -157,147 +148,132 @@ class AlpamayoFullModel(nn.Module):
             vlm_kwargs["pixel_values"] = pixel_values
         if image_grid_thw is not None:
             vlm_kwargs["image_grid_thw"] = image_grid_thw
-            
+
         vlm_outputs = self.vlm(
             input_ids=input_ids,
             attention_mask=attention_mask,
             labels=labels,
             **vlm_kwargs,
         )
-        
+
         language_loss = vlm_outputs.loss
         if language_loss is not None:
             total_loss = total_loss + language_loss
-        
+            loss_dict["language_loss"] = language_loss.item()
+
         # =================================================================
-        # 2. Trajectory Loss (Flow Matching)
+        # 2. Trajectory Loss (End-to-End Generation)
         # =================================================================
         if gt_trajectory is not None and ego_history_xyz is not None:
             traj_loss = self._compute_trajectory_loss(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                pixel_values=pixel_values,
+                image_grid_thw=image_grid_thw,
                 gt_trajectory=gt_trajectory,
                 ego_history_xyz=ego_history_xyz,
                 ego_history_rot=ego_history_rot,
             )
             total_loss = total_loss + self.traj_loss_weight * traj_loss
-        
-        return {"loss": total_loss}
+            loss_dict["traj_loss"] = traj_loss.item()
+
+        loss_dict["total_loss"] = total_loss.item()
+        return {"loss": total_loss, "loss_dict": loss_dict}
     
     def _compute_trajectory_loss(
         self,
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor,
+        pixel_values: Optional[torch.Tensor],
+        image_grid_thw: Optional[torch.Tensor],
         gt_trajectory: torch.Tensor,
         ego_history_xyz: torch.Tensor,
         ego_history_rot: torch.Tensor,
-        vlm_hidden_states: Optional[torch.Tensor] = None,
-        **kwargs,
     ) -> torch.Tensor:
         """
-        Compute trajectory loss using flow matching.
-        
-        Flow matching loss: MSE(pred_v, target_v)
-        where target_v = x_1 - x_0 (straight line path)
-        x_0 ~ N(0, 1), x_1 = gt_action
+        Compute trajectory loss using END-TO-END generation.
+
+        This actually runs the full VLM → Expert → Diffusion pipeline
+        to generate trajectories, then compares with GT in trajectory space.
+
+        This ensures:
+        1. Model sees the images (VLM processes them)
+        2. Gradient flows through entire pipeline
+        3. Lateral movements (left/right) are learned correctly
         """
+        device = gt_trajectory.device
         B = gt_trajectory.shape[0]
-        
-        # Get device and dtype from expert module
-        try:
-            param = next(self.expert.parameters())
-            device = param.device
-            dtype = param.dtype  # Should be bfloat16
-        except StopIteration:
-            device = gt_trajectory.device
-            dtype = torch.bfloat16
-        
-        # Move input tensors to correct device AND dtype
-        gt_trajectory = gt_trajectory.to(device=device, dtype=dtype)
-        ego_history_xyz = ego_history_xyz.to(device=device, dtype=dtype)
-        if ego_history_rot is not None:
-            ego_history_rot = ego_history_rot.to(device=device, dtype=dtype)
-        
-        # Ensure trajectory has z=0 if only xy provided
+
+        # Ensure gt_trajectory is (B, T, 2) or (B, T, 3)
+        if gt_trajectory.dim() == 2:
+            gt_trajectory = gt_trajectory.unsqueeze(0)  # (T, 2) -> (1, T, 2)
+
+        # Add z=0 if only xy
         if gt_trajectory.shape[-1] == 2:
-            gt_trajectory = F.pad(gt_trajectory, (0, 1), value=0)  # Add z=0
-        
-        # We need rotation matrices for action space conversion
-        # If ego_history_rot is None, use identity
-        if ego_history_rot is None or ego_history_rot.numel() == 0:
-            # Create identity rotation for each trajectory point
-            T = gt_trajectory.shape[1]
-            ego_history_rot = torch.eye(3, device=device).unsqueeze(0).unsqueeze(0).unsqueeze(0)
-            ego_history_rot = ego_history_rot.expand(B, 1, T, 3, 3)
-        
-        # Ensure ego_history has correct shape
-        # Expected: (B, 1, T, 3) for xyz, (B, 1, T, 3, 3) for rot
+            gt_trajectory = F.pad(gt_trajectory, (0, 1), value=0)  # (B, T, 2) -> (B, T, 3)
+
+        # Prepare ego history
+        if ego_history_xyz.dim() == 2:
+            ego_history_xyz = ego_history_xyz.unsqueeze(0)  # (T, 3) -> (1, T, 3)
+        if ego_history_rot.dim() == 3:
+            ego_history_rot = ego_history_rot.unsqueeze(0)  # (T, 3, 3) -> (1, T, 3, 3)
+
+        # Expand to match batch size
+        if ego_history_xyz.shape[0] == 1 and B > 1:
+            ego_history_xyz = ego_history_xyz.expand(B, -1, -1)
+        if ego_history_rot.shape[0] == 1 and B > 1:
+            ego_history_rot = ego_history_rot.expand(B, -1, -1, -1)
+
+        # Add sample dimension: (B, T, ...) -> (B, 1, T, ...)
         if ego_history_xyz.dim() == 3:
-            ego_history_xyz = ego_history_xyz.unsqueeze(1)  # Add sample dim
+            ego_history_xyz = ego_history_xyz.unsqueeze(1)
         if ego_history_rot.dim() == 4:
             ego_history_rot = ego_history_rot.unsqueeze(1)
-            
-        # Convert trajectory to action space
-        # action_space expects: (B, T, 3) for xyz, (B, T, 3, 3) for rot
-        # We need to create future_rot from trajectory direction or use identity
-        T_future = gt_trajectory.shape[1]
-        gt_future_rot = torch.eye(3, device=device, dtype=dtype).unsqueeze(0).unsqueeze(0).expand(B, T_future, 3, 3).clone()
-        
-        # Need to reshape for action_space
-        hist_xyz = ego_history_xyz[:, 0]  # (B, T_hist, 3)
-        hist_rot = ego_history_rot[:, 0]  # (B, T_hist, 3, 3)
-        
+
         try:
-            # IMPORTANT: cholesky operation requires float32, not bfloat16
-            # Convert to float32 for action space conversion
-            gt_action = self.action_space.traj_to_action(
-                traj_history_xyz=hist_xyz.float(),
-                traj_history_rot=hist_rot.float(),
-                traj_future_xyz=gt_trajectory.float(),
-                traj_future_rot=gt_future_rot.float(),
-            )  # (B, *action_dims) in float32
-            # Convert back to bfloat16
-            gt_action = gt_action.to(dtype)
+            # Run FULL trajectory generation pipeline
+            # This calls VLM → Expert → Diffusion
+            with torch.autocast("cuda", dtype=torch.bfloat16):
+                pred_xyz, pred_rot = self.base_model.sample_trajectories_from_data_with_vlm_rollout(
+                    data={
+                        "tokenized_data": {
+                            "input_ids": input_ids,
+                            "attention_mask": attention_mask,
+                            "pixel_values": pixel_values,
+                            "image_grid_thw": image_grid_thw,
+                        },
+                        "ego_history_xyz": ego_history_xyz,
+                        "ego_history_rot": ego_history_rot,
+                    },
+                    num_traj_samples=1,  # Generate 1 trajectory per sample
+                    top_p=0.98,
+                    temperature=0.6,
+                    max_generation_length=128,  # Shorter for training efficiency
+                )
+
+            # pred_xyz: (B, 1, num_samples=1, T, 3)
+            # Extract: (B, T, 3)
+            pred_xyz = pred_xyz[:, 0, 0, :, :]  # (B, T, 3)
+
+            # Match GT trajectory length
+            T_gt = gt_trajectory.shape[1]
+            T_pred = pred_xyz.shape[1]
+
+            if T_pred > T_gt:
+                pred_xyz = pred_xyz[:, :T_gt, :]
+            elif T_pred < T_gt:
+                gt_trajectory = gt_trajectory[:, :T_pred, :]
+
+            # MSE loss in trajectory space (meters)
+            # Focus on x-y plane (ignore z)
+            loss = F.mse_loss(pred_xyz[:, :, :2], gt_trajectory[:, :, :2])
+
+            return loss
+
         except Exception as e:
-            logger.warning(f"Failed to convert trajectory to action: {e}")
+            logger.warning(f"Trajectory generation failed during training: {e}")
+            # Return zero loss with gradient
             return torch.tensor(0.0, device=device, requires_grad=True)
-        
-        # ==== Flow Matching Training ====
-        # Sample random timestep t ~ U(0, 1)
-        t = torch.rand(B, device=device, dtype=dtype).view(B, 1, 1)  # (B, 1, 1)
-        
-        # Sample noise x_0 ~ N(0, 1)
-        x_0 = torch.randn(gt_action.shape, device=device, dtype=dtype)  # (B, *action_dims)
-        
-        # Interpolate: x_t = (1-t) * x_0 + t * x_1
-        x_t = (1 - t) * x_0 + t * gt_action
-        
-        # Target vector field: v = x_1 - x_0
-        target_v = gt_action - x_0
-        
-        # We need hidden states from VLM to condition the expert
-        # For simplified training, we use a dummy conditioning
-        # In full implementation, we'd use vlm_hidden_states or run VLM generate
-        
-        # Predict vector field using action_in_proj -> expert -> action_out_proj
-        n_tokens = self.action_space.get_action_space_dims()[0]
-        
-        # Project noisy action to embeddings
-        action_embeds = self.action_in_proj(x_t, t.squeeze(-1).squeeze(-1))
-        if action_embeds.dim() == 2:
-            action_embeds = action_embeds.view(B, n_tokens, -1)
-        
-        # Run expert (simplified: no KV cache conditioning for training)
-        # This is a simplification - ideally we'd cache VLM outputs
-        expert_out = self.expert(
-            inputs_embeds=action_embeds,
-            use_cache=False,
-        )
-        
-        last_hidden = expert_out.last_hidden_state  # (B, n_tokens, hidden)
-        pred_v = self.action_out_proj(last_hidden)  # (B, n_tokens, action_dim)
-        pred_v = pred_v.view(B, *self.action_space.get_action_space_dims())
-        
-        # MSE loss
-        loss = F.mse_loss(pred_v, target_v)
-        
-        return loss
 
 
 class FullPipelineDataset(torch.utils.data.Dataset):

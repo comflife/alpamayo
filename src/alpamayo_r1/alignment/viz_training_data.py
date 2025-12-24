@@ -5,8 +5,8 @@ from PIL import Image
 import matplotlib.pyplot as plt
 
 # Configuration
-DATA_PATH = Path("/home/byounggun/alpamayo/src/alpamayo_r1/alignment/preference_dataset/finetune_data.jsonl")
-OUTPUT_PATH = Path("/home/byounggun/alpamayo/src/alpamayo_r1/alignment/preference_dataset")
+DATA_PATH = Path("/home/byounggun/alpamayo/src/alpamayo_r1/alignment/preference_dataset_v2/finetune_data.jsonl")
+OUTPUT_PATH = Path("/home/byounggun/alpamayo/src/alpamayo_r1/alignment/preference_dataset_v2")
 OUTPUT_PATH.mkdir(parents=True, exist_ok=True)
 NUM_SAMPLES = 20
 
@@ -73,32 +73,38 @@ def main():
             continue
             
         # Project trajectories
-        # JSONL has "original_trajectory" and "trajectory" (which is the corrected one)
-        orig_traj = sample["original_trajectory"]
-        corr_traj = sample["trajectory"]
-        
-        orig_pts = project_to_image(orig_traj, img_np.shape)
-        corr_pts = project_to_image(corr_traj, img_np.shape)
-        
-        # Plot Original (Blue)
-        if len(orig_pts) > 1:
-            xs, ys = zip(*orig_pts)
-            ax.plot(xs, ys, 'b-', linewidth=4, alpha=0.7, label='Original (Violated)')
-            
-        # Plot Corrected (Red)
-        if len(corr_pts) > 1:
-            xs, ys = zip(*corr_pts)
-            ax.plot(xs, ys, 'r--', linewidth=4, alpha=0.9, label='Corrected (Target)')
-            
+        # V2 format: "alpamayo_trajectory" (original) and "trajectory" (final: alpamayo or corrected)
+        alpamayo_traj = sample.get("alpamayo_trajectory", [])
+        final_traj = sample["trajectory"]
+        source = sample.get("source", "unknown")
+
+        alpamayo_pts = project_to_image(alpamayo_traj, img_np.shape)
+        final_pts = project_to_image(final_traj, img_np.shape)
+
+        # Plot Alpamayo Original (Blue)
+        if len(alpamayo_pts) > 1:
+            xs, ys = zip(*alpamayo_pts)
+            ax.plot(xs, ys, 'b-', linewidth=3, alpha=0.6, label='Alpamayo Original')
+
+        # Plot Final (Red if corrected, Green if kept original)
+        if len(final_pts) > 1:
+            xs, ys = zip(*final_pts)
+            if source == "corrected":
+                ax.plot(xs, ys, 'r--', linewidth=4, alpha=0.9, label='Corrected by Critic')
+            else:
+                ax.plot(xs, ys, 'g-', linewidth=4, alpha=0.9, label='Kept Original')
+
         # Meta info
         expl = sample.get("explanation", "No explanation")
+        reasoning = sample.get("reasoning", "")[:35]
         # Truncate explanation
-        short_expl = (expl[:50] + '...') if len(expl) > 50 else expl
-        ax.set_title(f"Sample #{i+1}\n{short_expl}", fontsize=10, color='red')
+        short_expl = (expl[:45] + '...') if len(expl) > 45 else expl
+        title_color = 'red' if source == "corrected" else 'green'
+        ax.set_title(f"#{i+1} [{source}]\n{reasoning}\n{short_expl}", fontsize=9, color=title_color)
         ax.axis('off')
-        
+
         if i == 0:
-            ax.legend(loc='lower right')
+            ax.legend(loc='lower right', fontsize=8)
 
     # Hide unused subplots
     for j in range(i + 1, len(axes)):

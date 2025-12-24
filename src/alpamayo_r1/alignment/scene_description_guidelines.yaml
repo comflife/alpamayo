@@ -1,0 +1,256 @@
+# Off-Road Scene Description Guidelines for VLM Training
+# Purpose: Generate descriptions that include DRIVING DECISIONS and CRITICAL COMPONENTS
+# Format: One complete sentence describing the action needed and the reason why
+#
+# Structure: [Driving Decision] + [to/because] + [Critical Components] + [location/context]
+#
+# Example format:
+# "Nudge left over the line to increase clearance from the cyclists and pedestrian on the right
+#  and slow down to yield to the jaywalking pedestrian ahead."
+
+rules:
+  # ============================================================================
+  # CORE PRINCIPLE: Action + Reason
+  # ============================================================================
+  - id: action_reason_structure
+    category: description_format
+    description: "Every description must state WHAT action is needed and WHY (based on observed terrain/hazards)."
+    priority: critical
+    enabled: true
+    details: |
+      A good off-road description follows this structure:
+
+      [DRIVING DECISION] + [to/because/while] + [CRITICAL COMPONENTS]
+
+      **DRIVING DECISIONS** (what to do):
+      - Nudge left/right within lane
+      - Steer left/right to change path
+      - Maintain current trajectory
+      - Slow down / Decelerate
+      - Keep to the left/right side
+      - Navigate around [obstacle]
+      - Stay centered / Keep straight
+      - Increase clearance from [hazard]
+
+      **CRITICAL COMPONENTS** (why do it):
+      - Terrain features: puddle, deep mud, rut, wet patch, muddy section
+      - Obstacles: rocks, vegetation, bushes, trees, ditches
+      - Surface conditions: slippery ground, loose gravel, sandy soil
+      - Path characteristics: narrow passage, blocked path, steep slope
+
+      GOOD examples:
+      ✓ "Nudge right within the current path to maintain safe clearance from the deep muddy rut
+         on the left side while keeping clear of the dense vegetation encroaching from the right edge."
+
+      ✓ "Navigate left around the large puddle blocking the center of the dirt path because
+         the water depth is unclear and could hide deep mud or obstacles beneath."
+
+      ✓ "Keep to the right side of the grassy trail to avoid the rocky outcrop on the left
+         and the overgrown bushes that are narrowing the passable area ahead."
+
+      BAD examples:
+      ✗ "The path has mud and obstacles" (no action, no specific components)
+      ✗ "Muddy terrain on the left" (no driving decision)
+      ✗ "Drive carefully" (too vague, no critical components)
+
+  # ============================================================================
+  # DRIVING DECISIONS: Types and Usage
+  # ============================================================================
+  - id: driving_decision_vocabulary
+    category: action_vocabulary
+    description: "Use specific, actionable driving decisions that indicate lateral/longitudinal control."
+    priority: critical
+    enabled: true
+    details: |
+      **LATERAL CONTROL (steering)**:
+      - "Nudge left/right within lane" - small adjustment without lane change
+      - "Steer left/right" - moderate steering correction
+      - "Navigate left/right around [obstacle]" - deliberate path change
+      - "Keep to the left/right side of [path]" - maintain position relative to path
+      - "Maintain current trajectory" - continue straight
+      - "Stay centered on [path]" - aim for middle of drivable corridor
+
+      **LONGITUDINAL CONTROL (speed)**:
+      - "Slow down" - general deceleration
+      - "Decelerate to [action]" - slow for specific reason
+      - "Maintain speed while [condition]" - keep current speed during action
+
+      **COMBINED (both)**:
+      - "Slow down and nudge left to [reason]"
+      - "Maintain trajectory while being aware of [hazard]"
+      - "Navigate around [obstacle] and increase clearance from [hazard]"
+
+  # ============================================================================
+  # CRITICAL COMPONENTS: Terrain & Hazards
+  # ============================================================================
+  - id: critical_components_identification
+    category: hazard_identification
+    description: "Identify and name specific terrain features and hazards that justify the driving decision."
+    priority: critical
+    enabled: true
+    details: |
+      **WATER/MUD HAZARDS**:
+      - "large puddle blocking the center"
+      - "deep muddy section on the left"
+      - "standing water of unclear depth"
+      - "wet patches visible ahead"
+      - "reflective water surface"
+
+      **RUTS/GROOVES**:
+      - "deep tire ruts on the right side"
+      - "parallel wheel grooves with mud inside"
+      - "shallow rut on the left"
+
+      **VEGETATION**:
+      - "dense vegetation encroaching from both sides"
+      - "overgrown bushes along the right edge"
+      - "trees narrowing the path ahead"
+      - "grass growing into the trail"
+
+      **ROCKS/OBSTACLES**:
+      - "rocky outcrop on the left"
+      - "scattered rocks across the path"
+      - "large boulder blocking the right side"
+
+      **TERRAIN CONDITIONS**:
+      - "loose gravel surface"
+      - "sandy soil with poor traction"
+      - "slippery muddy ground"
+      - "uneven terrain with bumps"
+
+      **PATH CHARACTERISTICS**:
+      - "narrow passage between obstacles"
+      - "steep ditch on the right side"
+      - "soft shoulder on the left"
+      - "trail narrowing ahead"
+
+  # ============================================================================
+  # LOCATION/SPATIAL CONTEXT
+  # ============================================================================
+  - id: spatial_context
+    category: location_specification
+    description: "Always specify WHERE the hazards/features are located (left/right/center/ahead)."
+    priority: high
+    enabled: true
+    details: |
+      **LATERAL POSITION**:
+      - "on the left side" / "on the right side"
+      - "in the center" / "blocking the middle"
+      - "along the left edge" / "at the right boundary"
+      - "from both sides" / "from the left and right"
+
+      **LONGITUDINAL POSITION**:
+      - "ahead" / "visible ahead"
+      - "immediately ahead"
+      - "in the distance"
+      - "approaching"
+
+      **COMBINED**:
+      - "on the right side ahead"
+      - "blocking the center path ahead"
+      - "encroaching from the left as we approach"
+
+  # ============================================================================
+  # CAUSALITY: Explaining WHY
+  # ============================================================================
+  - id: causal_explanation
+    category: reasoning
+    description: "Use 'to', 'because', 'while', 'due to' to connect action and reason."
+    priority: high
+    enabled: true
+    details: |
+      **TO (purpose)**:
+      - "Nudge right to maintain clearance from the puddle"
+      - "Slow down to safely navigate the rough terrain"
+      - "Keep left to avoid the deep rut on the right"
+
+      **BECAUSE (explanation)**:
+      - "Navigate around the puddle because the water depth is unclear"
+      - "Steer right because the left path is blocked by vegetation"
+      - "Maintain current path because the terrain ahead is clear"
+
+      **WHILE (condition)**:
+      - "Maintain trajectory while being aware of the ditch on the right"
+      - "Stay centered while keeping clearance from both edges"
+      - "Proceed straight while avoiding the rocks scattered on the left"
+
+      **DUE TO (cause)**:
+      - "Reduce speed due to the muddy surface ahead"
+      - "Increase clearance due to the unstable shoulder"
+
+  # ============================================================================
+  # ABSENCE OF HAZARDS
+  # ============================================================================
+  - id: safe_conditions
+    category: clear_path
+    description: "If no critical hazards exist, describe the clear path and maintaining current trajectory."
+    priority: medium
+    enabled: true
+    details: |
+      When terrain is relatively safe:
+
+      GOOD examples:
+      ✓ "Maintain current trajectory on the firm dirt path with clear passage ahead
+         and no significant obstacles visible."
+
+      ✓ "Continue straight on the established tire tracks with adequate clearance
+         from vegetation on both sides."
+
+      ✓ "Keep the current path on the grassy trail which remains wide and clear
+         with no immediate hazards."
+
+      DON'T just say "clear path" - still provide context about why it's safe.
+
+  # ============================================================================
+  # MULTI-HAZARD SCENARIOS
+  # ============================================================================
+  - id: multiple_hazards
+    category: complex_scenarios
+    description: "When multiple hazards exist, prioritize the most immediate/critical and mention secondary concerns."
+    priority: high
+    enabled: true
+    details: |
+      Structure for multiple hazards:
+      [PRIMARY ACTION for PRIMARY HAZARD] + [while/and] + [SECONDARY CONSIDERATION]
+
+      Examples:
+      ✓ "Nudge left to avoid the deep puddle on the right while maintaining clearance
+         from the vegetation encroaching on the left side."
+
+      ✓ "Slow down and steer right around the large rock in the center while being
+         aware of the muddy rut on the right edge."
+
+      ✓ "Navigate left around the blocked center path due to standing water while
+         keeping clear of the soft shoulder on the left and the overgrown bushes ahead."
+
+      Priority order (most critical first):
+      1. Immediate obstacles blocking the path (rocks, trees, deep water)
+      2. Traction hazards (puddles, deep mud, steep slopes)
+      3. Edge hazards (ditches, soft shoulders, vegetation)
+      4. Surface conditions (roughness, loose gravel)
+
+# ============================================================================
+# SUMMARY FOR VLM TRAINING
+# ============================================================================
+# The goal is to train the VLM to:
+# 1. Observe the terrain and identify critical components (hazards, obstacles, conditions)
+# 2. Determine the appropriate driving decision based on those components
+# 3. Explain the decision in a natural, complete sentence
+# 4. Include spatial context (where things are)
+# 5. Provide causal reasoning (why this action is needed)
+#
+# This format mirrors autonomous driving narration where the system must:
+# - State what it will do
+# - Explain why based on what it sees
+# - Be specific about locations and hazards
+#
+# Examples of complete descriptions:
+# - "Steer slightly right within the current path to maintain safe clearance from the deep
+#    muddy rut on the left side while keeping clear of the dense vegetation encroaching
+#    from the right edge."
+#
+# - "Navigate left around the large puddle blocking the center of the dirt path because
+#    the water depth is unclear and could hide deep mud or obstacles beneath."
+#
+# - "Maintain current trajectory on the dirt road while being aware of the steep ditch
+#    on the right side and scattered rocks on the left that could damage the vehicle."

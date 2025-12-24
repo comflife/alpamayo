@@ -24,29 +24,41 @@ from alpamayo_r1.models.alpamayo_r1 import AlpamayoR1
 from alpamayo_r1 import helper
 
 # Configuration
-CHECKPOINT_PATH = "/home/byounggun/alpamayo/outputs/alpamayo_full_finetuned"
+# CHECKPOINT_PATH = "/home/byounggun/alpamayo/outputs/alpamayo_srd_rl_basic"
+CHECKPOINT_PATH = "/home/byounggun/alpamayo/outputs/alpamayo_sft_v2"
 DATA_PATH = "/home/byounggun/alpamayo/src/alpamayo_r1/alignment/finetune_dataset/finetune_data.jsonl"
 OUTPUT_DIR = "/home/byounggun/alpamayo/outputs/comparison_visualizations_v2"
 DEVICE_ORIGINAL = "cuda:0"
 DEVICE_FINETUNED = "cuda:1"
 NUM_SAMPLES = 20  # Number of samples to visualize
 
-# Camera intrinsics (Rellis-3D style)
-FX, FY = 2813.64, 2808.33
-CX, CY = 969.29, 624.05
+# Rellis-3D camera info directory
+RELLIS_DIR = "/home/byounggun/alpamayo/Rellis-3D"
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 
-def project_to_image(trajectory_xy, img_shape):
+def load_camera_params(folder):
+    """Load camera intrinsics for a specific Rellis-3D sequence."""
+    camera_info_path = os.path.join(RELLIS_DIR, f"camera_info_{folder}.txt")
+    if os.path.exists(camera_info_path):
+        with open(camera_info_path, 'r') as f:
+            fx, fy, cx, cy = map(float, f.read().strip().split())
+        return fx, fy, cx, cy
+    else:
+        # Default values if file not found
+        return 2813.64, 2808.33, 969.29, 624.05
+
+
+def project_to_image(trajectory_xy, img_shape, fx, fy, cx, cy):
     """Project BEV trajectory to image coordinates."""
     H, W = img_shape[:2]
     points = []
     for x_fwd, y_lat in trajectory_xy:
         if x_fwd <= 1.0:
             continue
-        u = CX - FX * y_lat / x_fwd
-        v = CY + FY * 1.5 / x_fwd  # 1.5m camera height
+        u = cx - fx * y_lat / x_fwd
+        v = cy + fy * 1.5 / x_fwd  # 1.5m camera height
         if 0 <= u < W and 0 <= v < H:
             points.append((int(u), int(v)))
     return points
@@ -198,27 +210,31 @@ def main():
     
     for idx, sample in enumerate(selected_samples):
         print(f"\n[{idx+1}/{NUM_SAMPLES}] Processing sample...")
-        
+
         frame_paths = sample['frame_paths'][:4]
         gt_traj = np.array(sample['trajectory'])
         gt_reasoning = sample['reasoning']
-        
+        folder = sample['folder']
+
+        # Load camera parameters for this sequence
+        fx, fy, cx, cy = load_camera_params(folder)
+
         # Load last frame for visualization
         img_path = frame_paths[-1]
         img = np.array(Image.open(img_path).convert("RGB"))
-        
+
         # Original model
         print("  Running Original model...")
         orig_traj, orig_reasoning = run_inference(
             original_model, processor_orig, frame_paths, DEVICE_ORIGINAL
         )
-        
+
         # Fine-tuned model
         print("  Running Fine-tuned model...")
         ft_traj, ft_reasoning = run_inference(
             finetuned_model, processor_ft, frame_paths, DEVICE_FINETUNED
         )
-        
+
         results.append({
             "img": img,
             "gt_traj": gt_traj,
@@ -227,6 +243,10 @@ def main():
             "gt_reasoning": gt_reasoning,
             "orig_reasoning": orig_reasoning,
             "ft_reasoning": ft_reasoning,
+            "fx": fx,
+            "fy": fy,
+            "cx": cx,
+            "cy": cy,
         })
     
     # Create grid visualization
@@ -245,14 +265,15 @@ def main():
         gt_traj = result["gt_traj"]
         orig_traj = result["orig_traj"]
         ft_traj = result["ft_traj"]
-        
+        fx, fy, cx, cy = result["fx"], result["fy"], result["cx"], result["cy"]
+
         # Display image
         ax.imshow(img)
-        
+
         # Project trajectories
-        gt_pts = project_to_image(gt_traj[:, :2], img.shape)
-        orig_pts = project_to_image(orig_traj, img.shape) if orig_traj is not None else []
-        ft_pts = project_to_image(ft_traj, img.shape) if ft_traj is not None else []
+        gt_pts = project_to_image(gt_traj[:, :2], img.shape, fx, fy, cx, cy)
+        orig_pts = project_to_image(orig_traj, img.shape, fx, fy, cx, cy) if orig_traj is not None else []
+        ft_pts = project_to_image(ft_traj, img.shape, fx, fy, cx, cy) if ft_traj is not None else []
         
         # Plot GT (Green)
         if len(gt_pts) > 1:
@@ -300,14 +321,15 @@ def main():
         ax_img = axes[0]
         img = result["img"]
         ax_img.imshow(img)
-        
+
         gt_traj = result["gt_traj"]
         orig_traj = result["orig_traj"]
         ft_traj = result["ft_traj"]
-        
-        gt_pts = project_to_image(gt_traj[:, :2], img.shape)
-        orig_pts = project_to_image(orig_traj, img.shape) if orig_traj is not None else []
-        ft_pts = project_to_image(ft_traj, img.shape) if ft_traj is not None else []
+        fx, fy, cx, cy = result["fx"], result["fy"], result["cx"], result["cy"]
+
+        gt_pts = project_to_image(gt_traj[:, :2], img.shape, fx, fy, cx, cy)
+        orig_pts = project_to_image(orig_traj, img.shape, fx, fy, cx, cy) if orig_traj is not None else []
+        ft_pts = project_to_image(ft_traj, img.shape, fx, fy, cx, cy) if ft_traj is not None else []
         
         if len(gt_pts) > 1:
             xs, ys = zip(*gt_pts)
